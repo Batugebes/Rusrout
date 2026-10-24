@@ -1,18 +1,45 @@
 package com.rusroute.app
 
 import android.app.Activity
+import android.content.Intent
+import android.net.VpnService
 import android.os.Bundle
 import android.graphics.Color
+import android.net.Uri
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import com.wireguard.android.backend.GoBackend
+import com.wireguard.android.backend.Tunnel
+import com.wireguard.config.Config
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 class MainActivity : Activity() {
+    private lateinit var backend: GoBackend
+    private lateinit var status: TextView
+    private var tunnelConfig: Config? = null
+    private val tunnel = object : Tunnel {
+        override fun getName(): String = "RusRoute"
+        override fun onStateChange(newState: Tunnel.State) {
+            runOnUiThread {
+                status.text = if (newState == Tunnel.State.UP) "Durum: VPN bağlı" else "Durum: VPN bağlı değil"
+            }
+        }
+    }
+
+    companion object {
+        private const val PICK_CONFIG = 100
+        private const val VPN_PERMISSION = 101
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        backend = GoBackend(this)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -26,33 +53,47 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }
         val intro = TextView(this).apply {
-            text = "DNS ve VPN bağlantı profillerini yönetmek için başlangıç uygulaması."
-            textSize = 17f
+            text = "WireGuard VPN bağlantısı"
+            textSize = 18f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER
             setPadding(0, 20, 0, 24)
         }
-        val status = TextView(this).apply {
+        status = TextView(this).apply {
             text = "Durum: VPN bağlı değil"
             textSize = 16f
-            setTextColor(Color.rgb(90, 90, 90))
+            setTextColor(Color.rgb(70, 90, 70))
             gravity = Gravity.CENTER
             setPadding(0, 12, 0, 24)
         }
-        val dns = Button(this).apply {
-            text = "Özel DNS ayarları"
+        val import = Button(this).apply {
+            text = "Rusya VPN yapılandırması seç (.conf)"
             setOnClickListener {
-                Toast.makeText(this@MainActivity, "Android Ayarlar > Ağ ve İnternet > Özel DNS bölümünden DNS sağlayıcısı ayarlayabilirsin.", Toast.LENGTH_LONG).show()
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+                startActivityForResult(intent, PICK_CONFIG)
             }
         }
-        val vpn = Button(this).apply {
-            text = "VPN kurulumu hakkında"
+        val connect = Button(this).apply {
+            text = "Bağlan"
             setOnClickListener {
-                Toast.makeText(this@MainActivity, "Rusya IP adresi için Rusya çıkış sunucusu olan bir VPN sağlayıcısı ve geçerli yapılandırma gerekir. Bu sürüm VPN tüneli oluşturmaz.", Toast.LENGTH_LONG).show()
+                if (tunnelConfig == null) {
+                    Toast.makeText(this@MainActivity, "Önce Rusya sunucusuna ait WireGuard .conf dosyasını seç.", Toast.LENGTH_LONG).show()
+                } else {
+                    val permissionIntent = VpnService.prepare(this@MainActivity)
+                    if (permissionIntent != null) startActivityForResult(permissionIntent, VPN_PERMISSION)
+                    else connectTunnel()
+                }
             }
+        }
+        val disconnect = Button(this).apply {
+            text = "Bağlantıyı kes"
+            setOnClickListener { disconnectTunnel() }
         }
         val note = TextView(this).apply {
-            text = "Not: DNS tek başına IP adresini Rusya'ya taşımaz. Bu ilk sürüm VPN bağlantısı kurmaz."
+            text = "Önemli: Rusya IP'si için Rusya konumlu sunucudan alınmış geçerli bir WireGuard .conf dosyası gerekir. Uygulama kendiliğinden sunucu veya ücretsiz VPN oluşturmaz."
             textSize = 14f
             setTextColor(Color.rgb(100, 100, 100))
             setPadding(0, 28, 0, 0)
@@ -60,9 +101,52 @@ class MainActivity : Activity() {
         root.addView(title, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(intro)
         root.addView(status)
-        root.addView(dns, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(vpn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(import, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(connect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(disconnect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(note)
         setContentView(root)
+    }
+
+    @Deprecated("Deprecated in Android, retained for broad device compatibility")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_CONFIG && resultCode == RESULT_OK) {
+            val uri: Uri = data?.data ?: return
+            try {
+                contentResolver.openInputStream(uri).use { stream ->
+                    if (stream == null) throw IllegalArgumentException("Dosya açılamadı")
+                    BufferedReader(InputStreamReader(stream)).use { reader ->
+                        tunnelConfig = Config.parse(reader)
+                    }
+                }
+                Toast.makeText(this, "WireGuard yapılandırması yüklendi.", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                tunnelConfig = null
+                Toast.makeText(this, "Yapılandırma okunamadı. Geçerli bir WireGuard .conf dosyası seç.", Toast.LENGTH_LONG).show()
+            }
+        } else if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
+            connectTunnel()
+        }
+    }
+
+    private fun connectTunnel() {
+        val config = tunnelConfig ?: return
+        try {
+            backend.setState(tunnel, Tunnel.State.UP, config)
+            status.text = "Durum: VPN bağlantısı başlatıldı"
+        } catch (e: Exception) {
+            status.text = "Durum: Bağlantı kurulamadı"
+            Toast.makeText(this, "Bağlantı başarısız. Sunucu ve yapılandırma bilgilerini kontrol et.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun disconnectTunnel() {
+        try {
+            backend.setState(tunnel, Tunnel.State.DOWN, null)
+            status.text = "Durum: VPN bağlı değil"
+        } catch (e: Exception) {
+            Toast.makeText(this, "VPN bağlantısı kapatılamadı.", Toast.LENGTH_SHORT).show()
+        }
     }
 }

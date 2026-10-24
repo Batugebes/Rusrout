@@ -17,11 +17,13 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.StringReader
 
 class MainActivity : Activity() {
     private lateinit var backend: GoBackend
     private lateinit var status: TextView
     private var tunnelConfig: Config? = null
+    private val prefs by lazy { getSharedPreferences("rusroute", MODE_PRIVATE) }
     private val tunnel = object : Tunnel {
         override fun getName(): String = "RusRoute"
         override fun onStateChange(newState: Tunnel.State) {
@@ -34,6 +36,7 @@ class MainActivity : Activity() {
     companion object {
         private const val PICK_CONFIG = 100
         private const val VPN_PERMISSION = 101
+        private const val CONFIG_KEY = "wireguard_config"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,22 +81,14 @@ class MainActivity : Activity() {
         }
         val connect = Button(this).apply {
             text = "Bağlan"
-            setOnClickListener {
-                if (tunnelConfig == null) {
-                    Toast.makeText(this@MainActivity, "Önce Rusya sunucusuna ait WireGuard .conf dosyasını seç.", Toast.LENGTH_LONG).show()
-                } else {
-                    val permissionIntent = VpnService.prepare(this@MainActivity)
-                    if (permissionIntent != null) startActivityForResult(permissionIntent, VPN_PERMISSION)
-                    else connectTunnel()
-                }
-            }
+            setOnClickListener { requestVpnPermissionAndConnect() }
         }
         val disconnect = Button(this).apply {
             text = "Bağlantıyı kes"
             setOnClickListener { disconnectTunnel() }
         }
         val note = TextView(this).apply {
-            text = "Önemli: Rusya IP'si için Rusya konumlu sunucudan alınmış geçerli bir WireGuard .conf dosyası gerekir. Uygulama kendiliğinden sunucu veya ücretsiz VPN oluşturmaz."
+            text = "Otomatik bağlanma: Kaydedilmiş WireGuard yapılandırması varsa uygulama açıldığında bağlantı başlatılır. İlk kullanımda geçerli .conf dosyası ve Android VPN izni gerekir. Rusya IP'si için sunucunun Rusya konumunda olması gerekir."
             textSize = 14f
             setTextColor(Color.rgb(100, 100, 100))
             setPadding(0, 28, 0, 0)
@@ -106,6 +101,31 @@ class MainActivity : Activity() {
         root.addView(disconnect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(note)
         setContentView(root)
+
+        loadSavedConfig()
+        if (tunnelConfig != null) {
+            status.post { requestVpnPermissionAndConnect() }
+        }
+    }
+
+    private fun loadSavedConfig() {
+        val saved = prefs.getString(CONFIG_KEY, null) ?: return
+        try {
+            tunnelConfig = Config.parse(BufferedReader(StringReader(saved)))
+        } catch (_: Exception) {
+            tunnelConfig = null
+            status.text = "Durum: Kaydedilmiş yapılandırma okunamadı"
+        }
+    }
+
+    private fun requestVpnPermissionAndConnect() {
+        if (tunnelConfig == null) {
+            Toast.makeText(this, "Önce geçerli bir WireGuard .conf dosyası seç.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val permissionIntent = VpnService.prepare(this)
+        if (permissionIntent != null) startActivityForResult(permissionIntent, VPN_PERMISSION)
+        else connectTunnel()
     }
 
     @Deprecated("Deprecated in Android, retained for broad device compatibility")
@@ -114,19 +134,23 @@ class MainActivity : Activity() {
         if (requestCode == PICK_CONFIG && resultCode == RESULT_OK) {
             val uri: Uri = data?.data ?: return
             try {
-                contentResolver.openInputStream(uri).use { stream ->
+                val rawConfig = contentResolver.openInputStream(uri).use { stream ->
                     if (stream == null) throw IllegalArgumentException("Dosya açılamadı")
-                    BufferedReader(InputStreamReader(stream)).use { reader ->
-                        tunnelConfig = Config.parse(reader)
-                    }
+                    BufferedReader(InputStreamReader(stream)).use { it.readText() }
                 }
-                Toast.makeText(this, "WireGuard yapılandırması yüklendi.", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
+                tunnelConfig = Config.parse(BufferedReader(StringReader(rawConfig)))
+                prefs.edit().putString(CONFIG_KEY, rawConfig).apply()
+                Toast.makeText(this, "Yapılandırma kaydedildi. Bundan sonraki açılışlarda otomatik bağlanacak.", Toast.LENGTH_LONG).show()
+                requestVpnPermissionAndConnect()
+            } catch (_: Exception) {
                 tunnelConfig = null
+                prefs.edit().remove(CONFIG_KEY).apply()
                 Toast.makeText(this, "Yapılandırma okunamadı. Geçerli bir WireGuard .conf dosyası seç.", Toast.LENGTH_LONG).show()
             }
         } else if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
             connectTunnel()
+        } else if (requestCode == VPN_PERMISSION) {
+            status.text = "Durum: VPN izni verilmedi"
         }
     }
 
@@ -135,7 +159,7 @@ class MainActivity : Activity() {
         try {
             backend.setState(tunnel, Tunnel.State.UP, config)
             status.text = "Durum: VPN bağlantısı başlatıldı"
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             status.text = "Durum: Bağlantı kurulamadı"
             Toast.makeText(this, "Bağlantı başarısız. Sunucu ve yapılandırma bilgilerini kontrol et.", Toast.LENGTH_LONG).show()
         }
@@ -145,7 +169,7 @@ class MainActivity : Activity() {
         try {
             backend.setState(tunnel, Tunnel.State.DOWN, null)
             status.text = "Durum: VPN bağlı değil"
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             Toast.makeText(this, "VPN bağlantısı kapatılamadı.", Toast.LENGTH_SHORT).show()
         }
     }

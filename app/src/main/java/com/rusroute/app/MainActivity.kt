@@ -2,6 +2,8 @@ package com.rusroute.app
 
 import android.app.Activity
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.net.VpnService
 import android.os.Bundle
 import android.graphics.Color
@@ -56,7 +58,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         }
         val intro = TextView(this).apply {
-            text = "WireGuard VPN bağlantısı"
+            text = "Rusya VPN bağlantısı"
             textSize = 18f
             setTextColor(Color.DKGRAY)
             gravity = Gravity.CENTER
@@ -79,6 +81,17 @@ class MainActivity : Activity() {
                 startActivityForResult(intent, PICK_CONFIG)
             }
         }
+        val vlessList = Button(this).apply {
+            text = "Ücretsiz sunucu listesini kopyala (VLESS)"
+            setOnClickListener {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText(
+                    "RusRoute free VLESS subscription",
+                    "https://raw.githubusercontent.com/aviamastersgh/vpn-free-russia/main/verified_configs.txt"
+                ))
+                Toast.makeText(this@MainActivity, "Liste bağlantısı kopyalandı. Bu liste için VLESS destekli motor gerekir; mevcut WireGuard bağlantısı bunu çalıştıramaz.", Toast.LENGTH_LONG).show()
+            }
+        }
         val connect = Button(this).apply {
             text = "Bağlan"
             setOnClickListener { requestVpnPermissionAndConnect() }
@@ -97,6 +110,7 @@ class MainActivity : Activity() {
         root.addView(intro)
         root.addView(status)
         root.addView(import, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(vlessList, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(connect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(disconnect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(note)
